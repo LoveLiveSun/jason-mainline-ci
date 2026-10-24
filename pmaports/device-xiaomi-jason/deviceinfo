@@ -1,0 +1,45 @@
+# Reference: <https://postmarketos.org/deviceinfo>
+# jason（Xiaomi Mi Note 3）设备参数
+#
+# 依据：
+#   - 实机分区表 device-report/partitions.txt
+#     → 无 dtbo 分区  ⇒ 必须 append_dtb
+#     → 无 vbmeta 分区 ⇒ 不设置 flash_fastboot_partition_vbmeta
+#   - 同 SoC 参考设备 device-xiaomi-lavender 的偏移参数
+#   - 主线设备树 sdm660-xiaomi-jason.dts 的 compatible = "xiaomi,jason"
+
+deviceinfo_format_version="0"
+deviceinfo_name="Xiaomi Mi Note 3"
+deviceinfo_manufacturer="Xiaomi"
+deviceinfo_codename="xiaomi-jason"
+deviceinfo_year="2017"
+
+# 设备树。jason 只有一块面板（JDI FHD R63452），无需多 dtb 变体。
+deviceinfo_dtb="qcom/sdm660-xiaomi-jason"
+deviceinfo_append_dtb="true"
+deviceinfo_arch="aarch64"
+
+# 硬件
+deviceinfo_chassis="handset"
+deviceinfo_gpu_accelerated="true"
+deviceinfo_keyboard="false"
+deviceinfo_external_storage="false"
+deviceinfo_screen_width="1080"
+deviceinfo_screen_height="1920"
+
+# 刷机方式
+#   jason 的 stock aboot 只认 Android boot image，因此由 pmbootstrap
+#   生成 boot.img 后写入 boot 分区。无需 lk2nd。
+deviceinfo_flash_method="fastboot"
+deviceinfo_flash_kernel_on_update="true"
+
+deviceinfo_generate_bootimg="true"
+deviceinfo_bootimg_qcdt="false"
+deviceinfo_flash_sparse="true"
+
+deviceinfo_flash_offset_base="0x00000000"
+deviceinfo_flash_offset_kernel="0x00008000"
+deviceinfo_flash_offset_ramdisk="0x01000000"
+deviceinfo_flash_offset_second="0x00f00000"
+deviceinfo_flash_offset_tags="0x00000100"
+deviceinfo_flash_pagesize="4096"

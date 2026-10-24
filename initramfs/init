@@ -1,0 +1,188 @@
+#!/bin/busybox sh
+# ---------------------------------------------------------------------------
+# jason 主线内核 bootstrap initramfs 的 /init
+#
+# 目标（首次点亮验证）：
+#   1. 把 dmesg 打到屏幕上 —— jason 没有可用的 UART 排针，屏幕是唯一反馈通道
+#   2. 拉起 USB 网络（RNDIS，Windows 免驱），telnet 172.16.42.1:23 进系统
+#   3. 掉进 shell，方便用手上有的手段继续排查
+#
+# 这个 initramfs 故意做得很小：它不挂载真正的根文件系统，
+# 只负责证明「内核起来了、硬件描述是对的、屏幕和 USB 能用」。
+# ---------------------------------------------------------------------------
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH
+
+busybox --install -s 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# 1. 伪文件系统
+# ---------------------------------------------------------------------------
+mount -t proc     proc     /proc  2>/dev/null
+mount -t sysfs    sysfs    /sys   2>/dev/null
+mount -t devtmpfs devtmpfs /dev   2>/dev/null || mdev -s
+mkdir -p /dev/pts /dev/shm /tmp /run
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs  tmpfs  /tmp      2>/dev/null
+mount -t tmpfs  tmpfs  /run      2>/dev/null
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# 2. 把所有输出接到屏幕
+#    cmdline 里 console=tty0 排在最后 → /dev/console 就是 tty0
+# ---------------------------------------------------------------------------
+exec </dev/console >/dev/console 2>&1
+
+banner() {
+  echo ""
+  echo "=============================================================="
+  echo "  Xiaomi Mi Note 3 (jason) — mainline bootstrap"
+  echo "  kernel : $(uname -r)"
+  echo "  $(date 2>/dev/null || true)"
+  echo "=============================================================="
+  echo ""
+}
+
+banner
+
+# ---------------------------------------------------------------------------
+# 3. 加载内核模块（若 CI 把 modules.tar.gz 一并打进了 initramfs）
+# ---------------------------------------------------------------------------
+if [ -d /lib/modules ] && [ -n "$(ls -A /lib/modules 2>/dev/null)" ]; then
+  KREL="$(uname -r)"
+  if [ -f "/lib/modules/$KREL/modules.dep" ]; then
+    echo "[init] 加载内核模块…"
+    for m in /lib/modules/"$KREL"/kernel/drivers/*/*.ko*; do
+      [ -f "$m" ] || continue
+      insmod "$m" 2>/dev/null || true
+    done
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. 显示状态自检 —— 这是首次点亮最关心的事
+# ---------------------------------------------------------------------------
+echo "[init] --- 显示 / DRM 状态 ---"
+if [ -d /sys/class/drm ]; then
+  for c in /sys/class/drm/card*; do
+    [ -e "$c" ] || continue
+    echo "  $(basename "$c"): status=$(cat "$c/status" 2>/dev/null)"
+  done
+else
+  echo "  /sys/class/drm 不存在 —— DRM 驱动未加载，检查 CONFIG_DRM_MSM"
+fi
+
+echo ""
+echo "[init] --- 关键设备探测 ---"
+for pair in \
+    "UFS/eMMC  :/sys/block/mmcblk0" \
+    "触摸屏    :/sys/bus/i2c/drivers/rmi4_i2c" \
+    "GPU       :/sys/class/drm/card0" \
+    "USB       :/sys/class/udc" \
+    "蓝牙      :/sys/class/bluetooth" \
+    "充电器    :/sys/class/power_supply" \
+    "WLED 背光 :/sys/class/backlight" ; do
+  label="${pair%%:*}"
+  path="${pair##*:}"
+  if [ -e "$path" ]; then
+    echo "  [ OK ] $label"
+  else
+    echo "  [ -- ] $label  ($path)"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 5. USB 网络（RNDIS，Windows 免驱）—— 尽力而为，失败不影响其余流程
+# ---------------------------------------------------------------------------
+usb_net() {
+  command -v ls >/dev/null 2>&1 || return 0
+  [ -d /sys/kernel/config/usb_gadget ] || {
+    echo "[init] configfs gadget 不可用，跳过 USB 网络"
+    return 0
+  }
+  mount -t configfs none /sys/kernel/config 2>/dev/null || true
+
+  G=/sys/kernel/config/usb_gadget/g1
+  rm -rf "$G" 2>/dev/null || true
+  mkdir -p "$G" 2>/dev/null || { echo "[init] 创建 gadget 失败"; return 0; }
+
+  echo 0x18d1 > "$G/idVendor"      2>/dev/null
+  echo 0x1d00 > "$G/idProduct"     2>/dev/null
+  echo 0x0100 > "$G/bcdDevice"     2>/dev/null
+  echo 0x0200 > "$G/bcdUSB"        2>/dev/null
+  mkdir -p "$G/strings/0x409"
+  echo "postmarketOS"    > "$G/strings/0x409/manufacturer" 2>/dev/null
+  echo "jason mainline"  > "$G/strings/0x409/product"      2>/dev/null
+  echo "jason0000000001" > "$G/strings/0x409/serialnumber" 2>/dev/null
+
+  mkdir -p "$G/configs/c.1/strings/0x409"
+  echo "RNDIS+ECM" > "$G/configs/c.1/strings/0x409/configuration" 2>/dev/null
+  echo 250        > "$G/configs/c.1/MaxPower"                    2>/dev/null
+
+  # RNDIS 在前（Windows 免驱），ECM 作为备选
+  mkdir -p "$G/functions/rndis.usb0" 2>/dev/null && \
+    ln -s "$G/functions/rndis.usb0" "$G/configs/c.1/" 2>/dev/null
+  mkdir -p "$G/functions/ecm.usb0" 2>/dev/null && \
+    ln -s "$G/functions/ecm.usb0" "$G/configs/c.1/" 2>/dev/null
+
+  # RNDIS 需要让 Windows 认出设备类型
+  mkdir -p /run/usb-gadget 2>/dev/null
+  if [ -d "$G/functions/rndis.usb0" ] && command -v echo >/dev/null 2>&1; then
+    echo 0xEF > "$G/functions/rndis.usb0/class"    2>/dev/null
+    echo 0x04 > "$G/functions/rndis.usb0/subclass" 2>/dev/null
+    echo 0x01 > "$G/functions/rndis.usb0/protocol" 2>/dev/null
+  fi
+
+  UDC="$(ls /sys/class/udc 2>/dev/null | head -n1)"
+  if [ -z "$UDC" ]; then
+    echo "[init] 未找到 UDC —— USB 控制器未就绪，跳过 USB 网络"
+    return 0
+  fi
+  echo "$UDC" > "$G/UDC" 2>/dev/null || { echo "[init] 绑定 UDC 失败"; return 0; }
+  echo "[init] USB gadget 已绑定到 $UDC"
+
+  # 等接口出现
+  i=0
+  while [ $i -lt 20 ]; do
+    N="$(ls /sys/class/net 2>/dev/null | grep -E '^usb|^rndis|^enp' | head -n1)"
+    [ -n "$N" ] && break
+    i=$((i + 1)); sleep 1
+  done
+  [ -z "${N:-}" ] && { echo "[init] USB 网络接口未出现"; return 0; }
+
+  ifconfig "$N" 172.16.42.1 netmask 255.255.255.0 up 2>/dev/null || \
+    ip addr add 172.16.42.1/24 dev "$N" 2>/dev/null || true
+  echo "[init] USB 网络就绪：$N = 172.16.42.1/24"
+
+  # 从主机侧一般会是 172.16.42.2，起个 telnet 服务方便登录
+  telnetd -l /bin/sh -p 23 2>/dev/null && \
+    echo "[init] telnet 已启动：telnet 172.16.42.1"
+}
+
+usb_net
+
+# ---------------------------------------------------------------------------
+# 6. 保存内核日志，方便事后取证
+# ---------------------------------------------------------------------------
+mkdir -p /tmp/log 2>/dev/null
+dmesg > /tmp/log/dmesg.txt 2>/dev/null || true
+
+echo ""
+echo "=============================================================="
+echo "  boot 完成。可用的诊断命令："
+echo "    dmesg | less          查看内核日志"
+echo "    cat /proc/device-tree/model   确认 DTS 型号"
+echo "    ls  /sys/class/drm    查看显示输出"
+echo "    cat /sys/class/backlight/*/brightness  屏幕亮度"
+echo "    从主机 telnet 172.16.42.1 登录"
+echo "=============================================================="
+echo ""
+
+# ---------------------------------------------------------------------------
+# 7. 交互 shell
+# ---------------------------------------------------------------------------
+while true; do
+  setsid cttyhack sh </dev/tty0 >/dev/tty0 2>&1
+  echo "[init] shell 退出，5 秒后重启（Ctrl+C 可中断）"
+  sleep 5
+done

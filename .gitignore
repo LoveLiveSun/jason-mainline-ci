@@ -1,0 +1,7 @@
+out/
+work/
+initramfs-work/
+__pycache__/
+*.pyc
+*.cpio
+*.cpio.gz

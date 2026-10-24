@@ -1,0 +1,163 @@
+name: 1 - 构建 jason 主线内核与 boot.img
+
+# ---------------------------------------------------------------------------
+# 首次点亮验证用。产出 boot.img，刷入 jason 的 boot 分区即可。
+#
+# 本地 Windows 环境无法编译 Linux 内核（需要 WSL/Docker，均不可用），
+# 因此整个构建放在 GitHub 托管 runner 上完成，本地只负责 fastboot 刷机。
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: '内核分支（sdm660-mainline/linux）'
+        required: true
+        default: 'qcom-sdm660-7.2.y'
+      kernel_repo:
+        description: '内核仓库地址'
+        required: true
+        default: 'https://github.com/sdm660-mainline/linux'
+      enable_fbcon:
+        description: '强制打开显示控制台（首次点亮建议 1）'
+        required: true
+        default: '1'
+
+jobs:
+  build:
+    name: 构建内核 + boot.img
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: 检出本仓库
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # ubuntu-22.04 runner 可用磁盘只有约 14GB，内核编译不够用，
+      # 先清掉预装的大件（与社区 sdm660-mainline/infra 的做法一致）。
+      # -------------------------------------------------------------------
+      - name: 释放磁盘空间
+        run: |
+          set -x
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android \
+                      /opt/ghc /usr/local/share/boost \
+                      "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo apt-get clean
+          df -h / | tail -1
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            device-tree-compiler cpio kmod rsync \
+            python3 python3-pip git ca-certificates curl xz-utils \
+            ccache zstd
+          echo "======================="
+          aarch64-linux-gnu-gcc --version | head -1
+          dtc --version
+
+      - name: 安装 mkbootimg
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg
+          sudo ln -sf "$PWD/mkbootimg/mkbootimg.py"      /usr/local/bin/mkbootimg
+          sudo ln -sf "$PWD/mkbootimg/unpack_bootimg.py" /usr/local/bin/unpack_bootimg
+          sudo ln -sf "$PWD/mkbootimg/repack_bootimg.py" /usr/local/bin/repack_bootimg
+          mkbootimg --help >/dev/null && echo "mkbootimg 就绪"
+
+      - name: 配置 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-jason-${{ inputs.kernel_branch }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-jason-${{ inputs.kernel_branch }}-
+
+      - name: 环境概览
+        run: |
+          echo "CPU 核心数 : $(nproc)"
+          echo "内存       : $(free -h | awk '/^Mem:/{print $2}')"
+          echo "磁盘       : $(df -h . | awk 'NR==2{print $4}') 可用"
+          export CCACHE_DIR=~/.ccache
+          ccache --max-size=2G --set-config=compression=true || true
+
+      # -------------------------------------------------------------------
+      # 编译内核（Image + dtbs + modules）
+      # -------------------------------------------------------------------
+      - name: 编译内核
+        env:
+          KERNEL_REPO: ${{ inputs.kernel_repo }}
+          KERNEL_BRANCH: ${{ inputs.kernel_branch }}
+          ENABLE_FBCON: ${{ inputs.enable_fbcon }}
+          CROSS_COMPILE: aarch64-linux-gnu-
+          CC: ccache aarch64-linux-gnu-gcc
+          JOBS: '4'
+        run: |
+          chmod +x scripts/*.sh initramfs/*.sh
+          bash scripts/build-kernel.sh
+
+      - name: 生成 initramfs
+        env:
+          OUT_DIR: out
+        run: bash initramfs/make-initramfs.sh
+
+      - name: 组装 boot.img
+        env:
+          OUT_DIR: out
+        run: bash scripts/assemble-bootimg.sh
+
+      # -------------------------------------------------------------------
+      # 产物
+      # -------------------------------------------------------------------
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: jason-bootimg-${{ inputs.kernel_branch }}
+          path: |
+            out/boot.img
+            out/Image
+            out/Image-dtb
+            out/sdm660-xiaomi-jason.dtb
+            out/modules.tar.gz
+            out/kernel.config
+            out/kernel-commit.txt
+            out/config-checks.txt
+          retention-days: 30
+
+      - name: 构建摘要
+        if: always()
+        run: |
+          {
+            echo "## jason 主线内核构建结果"
+            echo ""
+            echo "- 内核分支：\`${{ inputs.kernel_branch }}\`"
+            echo "- 内核仓库：${{ inputs.kernel_repo }}"
+            echo "- 提交：\`$(cat out/kernel-commit.txt 2>/dev/null || echo '构建失败')\`"
+            echo ""
+            if [ -f out/boot.img ]; then
+              echo "### 产物"
+              echo ""
+              echo "| 文件 | 大小 |"
+              echo "|---|---|"
+              for f in out/boot.img out/Image out/sdm660-xiaomi-jason.dtb out/modules.tar.gz; do
+                [ -f "$f" ] && echo "| \`$(basename $f)\` | $(du -h "$f" | cut -f1) |"
+              done
+              echo ""
+              echo "### 下一步"
+              echo ""
+              echo "下载 \`boot.img\`，按 README 的刷机步骤写入 boot 分区。"
+            else
+              echo "构建失败，请查看上方日志。"
+            fi
+            if [ -f out/config-checks.txt ]; then
+              echo ""
+              echo "### 关键内核配置"
+              echo ""
+              echo '```'
+              cat out/config-checks.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,44 @@
+# Reference: <https://postmarketos.org/devicepkg>
+# Xiaomi Mi Note 3 (jason) 设备包
+#
+# 这是社区 pmaports 中目前缺失的那个包 ——
+# 主线内核与设备树都已经在 sdm660-mainline/linux 里就绪，
+# 唯独 pmaports 侧没有设备包，导致 pmbootstrap 无法选择 jason。
+#
+# 用法：把整个 device/ 目录放进你的 pmaports 克隆里对应分类目录下，
+# 详见 README 的「Track 2」。
+
+pkgname=device-xiaomi-jason
+pkgdesc="Xiaomi Mi Note 3"
+pkgver=1
+pkgrel=0
+url="https://postmarketos.org"
+license="MIT"
+arch="aarch64"
+options="!check !archcheck"
+depends="
+	firmware-xiaomi-jason
+	mkbootimg
+	msm-firmware-loader
+	postmarketos-base
+	soc-qcom-sdm660
+	soc-qcom-sdm660-rproc
+"
+makedepends="devicepkg-dev"
+source="
+	deviceinfo
+	modules-initfs
+"
+
+build() {
+	devicepkg_build $startdir $pkgname
+}
+
+package() {
+	devicepkg_package $startdir $pkgname
+}
+
+sha512sums="
+d0bdda9e8f48d71dfa47577f7867a187c799125d72270ecbc5c5c6152575ec592ec7f82c7604d905ec2bf67a563309d15e58624b20f999b0b7792241700b8dc5  deviceinfo
+67f93c3c2f54e4e956e7f9347e3f02f6728815414b1ca682138b818e3ef012ae47c95f41ac7d42006fa687010a6612d5d3d749d81d6510084485e1f8bde32f48  modules-initfs
+"

@@ -1,0 +1,58 @@
+# jason 的 GPU / 加解密相关固件
+#
+# 覆盖主线设备树里声明的两个固件依赖：
+#   &adreno_gpu_zap  { firmware-name = "a512_zap.mbn"; }
+#   &wifi            { ... ath10k WCN3990 ... }  ← 见下方说明
+#
+# 为什么能用 LineageOS 的 vendor 仓库：
+#   这些是从官方 MIUI 包里抽出来的原厂二进制，属于可再分发的 blob，
+#   社区（TheMuppets / LineageOS-jason）一直在这么做。
+#
+# 注意：首次构建前需要跑一次 `abuild checksum` 生成 sha512sums
+#       （这里不预填，因为 tarball 由你自己触发下载）。
+
+pkgname=firmware-xiaomi-jason
+pkgver=1
+pkgrel=0
+pkgdesc="Firmware files for Xiaomi Mi Note 3 (Adreno 512 / A5xx)"
+url="https://github.com/LineageOS-jason/proprietary_vendor_xiaomi_jason"
+arch="aarch64"
+license="proprietary"
+options="!strip !check !archcheck !spdx !tracedeps pmb:cross-native"
+
+_commit="5c0b9b1f535aa204fdec9be3b20b1fa628b84149"
+_vendor="proprietary_vendor_xiaomi_jason-$_commit"
+
+source="
+	$_vendor.tar.gz::https://github.com/LineageOS-jason/proprietary_vendor_xiaomi_jason/archive/$_commit.tar.gz
+"
+
+builddir="src"
+_fwdir="/lib/firmware"
+
+package() {
+	# --- GPU zap shader -------------------------------------------------
+	# DTS 要求的是 a512_zap.mbn（.elf 是同一个东西的别名）
+	install -Dm644 \
+		"$srcdir/$_vendor/proprietary/vendor/firmware/a512_zap.elf" \
+		"$pkgdir$_fwdir/postmarketos/a512_zap.mbn"
+
+	# --- Adreno A5xx 微码 -----------------------------------------------
+	# Adreno 512 与 530 同代，共用这套微码，主线 adreno 驱动从 qcom/ 读
+	for f in a530_gpmu.fw2 a530_pfp.fw a530_pm4.fw; do
+		install -Dm644 \
+			"$srcdir/$_vendor/proprietary/vendor/firmware/$f" \
+			"$pkgdir$_fwdir/qcom/$f"
+	done
+
+	# --- WiFi（ath10k WCN3990）------------------------------------------
+	# 暂不提供。原因见 README「WiFi 固件是可选项」：
+	#   jason 上加载 ath10k 会连带把 modem 搞崩，而 modem 目前本来
+	#   就因缺 IPA 不可用。先把系统跑稳，WiFi 单独再补。
+	# 需要时按 README 用 ath10k-fwencoder 生成：
+	#   /lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin
+	#   /lib/firmware/ath10k/WCN3990/hw1.0/board-2.bin
+}
+
+sha512sums="
+"

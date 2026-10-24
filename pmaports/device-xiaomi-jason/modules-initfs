@@ -1,0 +1,18 @@
+# 需要打进 initramfs 的内核模块（每行一个，'#' 开头为注释）
+#
+# jason 的 initramfs 至少要能点亮屏幕，否则 FDE 解锁界面（unl0kr）
+# 和 telnet 登录都没有反馈通道 —— jason 没有可用的 UART 排针。
+#
+# 注意：如果内核把面板驱动和 DRM/MSM 编译为内建（=y）而非模块（=m），
+# 下面这些行不会生效（模块不存在），但也不会报错。
+# 用 out/kernel.config 里的 CONFIG_DRM_MSM 取值来判断实际情况。
+
+# 触摸屏（Synaptics RMI4 over I2C）
+rmi4_core
+rmi4_i2c
+
+# 面板与显示
+panel_jdi_fhd_r63452
+
+# 背光 / PMIC
+qpnp_wled
