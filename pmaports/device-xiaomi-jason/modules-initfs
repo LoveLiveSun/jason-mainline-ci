@@ -12,7 +12,11 @@ rmi4_core
 rmi4_i2c
 
 # 面板与显示
-panel_jdi_fhd_r63452
+# 内核里的 symbol 是 CONFIG_DRM_PANEL_JDI_R63452，对应模块名 panel_jdi_r63452。
+# 注意：CI 的 build-kernel.sh 已把 DRM_MSM / DRM_DISPLAY_HELPER / 面板驱动
+# 全部强制内建（=y），因此这里列出它时模块并不存在，pmbootstrap 会跳过；
+# 保留是为了 Track 2 若改用模块化内核时名字正确。
+panel_jdi_r63452
 
 # 背光 / PMIC
 qpnp_wled
