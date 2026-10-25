@@ -56,9 +56,22 @@ if [ "${ENABLE_FBCON:-1}" = "1" ]; then
   #
   # 用 sed 原地替换而不是 cat >> .config：追加会在 .config 里留下同一 symbol
   # 的重复定义（原 =m 与新 =y 并存），Kconfig 取哪一个不可靠。
+  #
+  # ⚠ 第二轮构建实测：光改 DRM_MSM 本身没用。7.x 树的 drivers/gpu/drm/msm/Kconfig 里
+  #   DRM_MSM 带了这几个门控依赖：
+  #     depends on QCOM_AOSS_QMP  || QCOM_AOSS_QMP=n
+  #     depends on QCOM_OCMEM     || QCOM_OCMEM=n
+  #     depends on QCOM_LLCC      || QCOM_LLCC=n
+  #     depends on QCOM_COMMAND_DB|| QCOM_COMMAND_DB=n
+  #   Kconfig 规则：X=m 时 "X || X=n" 求值为 m，而依赖值为 m 会把该 symbol 的上限
+  #   压到 m —— 于是无论怎么把 DRM_MSM 写成 y，olddefconfig 都会把它降回 m。
+  #   sdm660_defconfig 里 QCOM_OCMEM=m / QCOM_LLCC=m / QCOM_AOSS_QMP=m，正是这个坑。
+  #   → 必须把这些门控也一并内建，DRM_MSM 才可能等于 y。
   for sym in \
       DRM DRM_KMS_HELPER DRM_DISPLAY_HELPER DRM_MIPI_DSI \
-      DRM_PANEL DRM_PANEL_BRIDGE DRM_PANEL_JDI_R63452 DRM_MSM \
+      DRM_PANEL DRM_PANEL_BRIDGE DRM_PANEL_JDI_R63452 DRM_MSM DRM_MSM_KMS \
+      DRM_MSM_DPU DRM_MSM_MDP5 DRM_MSM_DSI \
+      QCOM_OCMEM QCOM_LLCC QCOM_AOSS_QMP QCOM_COMMAND_DB QCOM_MDT_LOADER \
       BACKLIGHT_CLASS_DEVICE BACKLIGHT_QCOM_WLED \
       DRM_FBDEV_EMULATION DRM_FBDEV_EMULATION_DEFAULT_ON \
       FB FB_CORE FRAMEBUFFER_CONSOLE \
@@ -86,7 +99,24 @@ if [ "${ENABLE_FBCON:-1}" = "1" ]; then
   if [ -n "$missing" ]; then
     echo "错误：以下配置没能内建，显示链路不完整，刷入后会黑屏：" >&2
     echo "  $missing" >&2
-    echo "请检查这些 symbol 在 defconfig 里是否存在、名字是否写对。" >&2
+    echo "" >&2
+    echo "=== 诊断：门控依赖的当前取值 ===" >&2
+    for g in DRM DRM_KMS_HELPER DRM_MSM_KMS COMMON_CLK IOMMU_SUPPORT PM OF \
+             ARCH_QCOM QCOM_OCMEM QCOM_LLCC QCOM_AOSS_QMP QCOM_COMMAND_DB \
+             QCOM_MDT_LOADER QCOM_SCM BACKLIGHT_CLASS_DEVICE FB_CORE ; do
+      v="$(sed -n "s/^CONFIG_${g}=//p" .config | tail -n1)"
+      if [ -z "$v" ] && grep -q "^# CONFIG_${g} is not set" .config; then v="n"; fi
+      echo "  ${g} = ${v:-unset}" >&2
+    done
+    echo "" >&2
+    echo "=== 诊断：Kconfig 里这些 symbol 的原文定义 ===" >&2
+    for sym in $missing ; do
+      s="${sym%%(*}"
+      echo "--- config ${s} ---" >&2
+      grep -rn -A14 "^config ${s}$" drivers/ arch/arm64/ 2>/dev/null \
+        | grep -E "depends on|select|tristate|bool|default|^[^ ]*:config " | head -20 >&2
+    done
+    echo "请据此判断还需要把哪些依赖内建。" >&2
     exit 1
   fi
   echo "显示链路已确认全部内建 (=y)"
@@ -95,7 +125,7 @@ fi
 # 记录最终配置里关键项的实际取值，便于排查
 {
   echo "--- 最终配置关键项 ---"
-  grep -E '^CONFIG_(DRM_MSM|DRM_DISPLAY_HELPER|DRM_PANEL_JDI_R63452|DRM_FBDEV_EMULATION|FRAMEBUFFER_CONSOLE|VT_CONSOLE|FB|ARM_QCOM|QCOM_SMD_RPM|PINCTRL_SDM660|CLK_SDM660|QCOM_IPA|QCOM_Q6V5_MSS|QCOM_Q6V5_PAS|USB_GADGET|USB_CONFIGFS|USB_F_RNDIS)=' .config || true
+  grep -E '^CONFIG_(DRM|DRM_MSM|DRM_MSM_KMS|DRM_MSM_DPU|DRM_MSM_MDP5|DRM_MSM_DSI|DRM_KMS_HELPER|DRM_DISPLAY_HELPER|DRM_PANEL_JDI_R63452|DRM_FBDEV_EMULATION|FRAMEBUFFER_CONSOLE|VT_CONSOLE|FB|FB_CORE|BACKLIGHT_QCOM_WLED|QCOM_OCMEM|QCOM_LLCC|QCOM_AOSS_QMP|QCOM_COMMAND_DB|ARM_QCOM|QCOM_SMD_RPM|PINCTRL_SDM660|CLK_SDM660|QCOM_IPA|QCOM_Q6V5_MSS|QCOM_Q6V5_PAS|USB_GADGET|USB_CONFIGFS|USB_F_RNDIS)=' .config || true
 } | tee "../$OUT_DIR/config-checks.txt"
 
 # ---------------------------------------------------------------------------
